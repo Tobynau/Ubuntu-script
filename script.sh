@@ -66,184 +66,136 @@ read_list() {
   read -ra __ref
 }
 
-# Ask for admin and regular users (admins first). First admin = DEFAULT_ADMIN (never modified)
-is_valid_username() {
-  # returns 0 if $1 is a valid POSIX/Linux username (simple conservative check)
-  local u=$1
-  # must start with a lowercase letter or digit, allow a-z0-9._- up to 32 chars
-  if [[ "$u" =~ ^[a-z0-9][a-z0-9._-]{0,31}$ ]]; then
-    return 0
-  else
-    return 1
-  fi
+# Ask for and manage existing users (user prefers this interactive flow)
+printTime() {
+  local msg="$*"
+  echo "$(date +'%F %T') - $msg"
+  log "$msg"
 }
 
-echo "Enter ADMIN users (space-separated). FIRST user entered will be treated as the 'default' admin and will NOT be modified by this script."
-read -ra RAW_ADMIN_USERS
-if [[ ${#RAW_ADMIN_USERS[@]} -eq 0 ]]; then
-  echo "No admin users provided. Exiting."
+touch ~/Desktop/Script.log
+echo > ~/Desktop/Script.log
+chmod 777 ~/Desktop/Script.log || true
+
+if [[ $EUID -ne 0 ]]; then
+  echo "This script must be run as root"
   exit 1
 fi
+printTime "Script is being run as root."
 
-# validate and deduplicate admin list (DO NOT auto-convert spaces to underscores)
-declare -a ADMIN_USERS=()
-declare -A _tmp_seen=()
-for raw in "${RAW_ADMIN_USERS[@]}"; do
-  if is_valid_username "$raw"; then
-    s="$raw"
+apt-get install -y -qq gedit || true
+clear
+printTime "The current OS is $OS_NAME $OS_VER."
+
+mkdir -p ~/Desktop/backups
+chmod 777 ~/Desktop/backups || true
+printTime "Backups folder created on the Desktop."
+
+cp /etc/group ~/Desktop/backups/ 2>/dev/null || true
+chmod 777 ~/Desktop/backups/group 2>/dev/null || true
+cp /etc/passwd ~/Desktop/backups/ 2>/dev/null || true
+chmod 777 ~/Desktop/backups/passwd 2>/dev/null || true
+
+printTime "/etc/group and /etc/passwd files backed up."
+
+echo "Type all user account names, with a space in between"
+read -ra users
+
+usersLength=${#users[@]}
+
+for (( i=0;i<usersLength;i++)); do
+  clear
+  u=${users[i]}
+  echo "$u"
+  echo "Delete $u? yes or no"
+  read -r yn1
+  if [[ "$yn1" == "yes" ]]; then
+    userdel -r "$u" 2>/dev/null && printTime "$u has been deleted." || printTime "Failed to delete $u"
   else
-    log "Admin input '$raw' is not a valid username. Skipping unless you provide a replacement."
-    read -rp "Enter replacement valid username for '$raw' (leave empty to SKIP): " repl
-    if [[ -n "$repl" && is_valid_username "$repl" ]]; then
-      s="$repl"
-      log "Using replacement username '$repl' for input '$raw'."
+    echo "Make $u administrator? yes or no"
+    read -r yn2
+    if [[ "$yn2" == "yes" ]]; then
+      gpasswd -a "$u" sudo 2>/dev/null || true
+      gpasswd -a "$u" adm 2>/dev/null || true
+      gpasswd -a "$u" lpadmin 2>/dev/null || true
+      gpasswd -a "$u" sambashare 2>/dev/null || true
+      printTime "$u has been made an administrator."
     else
-      log "Skipping admin input '$raw' (no valid replacement provided)."
-      continue
+      gpasswd -d "$u" sudo 2>/dev/null || true
+      gpasswd -d "$u" adm 2>/dev/null || true
+      gpasswd -d "$u" lpadmin 2>/dev/null || true
+      gpasswd -d "$u" sambashare 2>/dev/null || true
+      gpasswd -d "$u" root 2>/dev/null || true
+      printTime "$u has been made a standard user."
     fi
-  fi
-  if [[ -z "${_tmp_seen[$s]:-}" ]]; then
-    ADMIN_USERS+=("$s")
-    _tmp_seen[$s]=1
+
+    echo "Make custom password for $u? yes or no"
+    read -r yn3
+    if [[ "$yn3" == "yes" ]]; then
+      echo "Password:"
+      read -r pw
+      echo -e "$pw\n$pw" | passwd "$u" 2>/dev/null || printTime "Failed to set password for $u"
+      printTime "$u has been given the password '$pw'."
+    else
+      echo -e "Moodle!22\nMoodle!22" | passwd "$u" 2>/dev/null || printTime "Failed to set default password for $u"
+      printTime "$u has been given the password 'Moodle!22'."
+    fi
+    passwd -x30 -n3 -w7 "$u" 2>/dev/null || true
+    usermod -L "$u" 2>/dev/null || true
+    printTime "$u's password has been given a maximum age of 30 days, minimum of 3 days, and warning of 7 days. $u's account has been locked."
   fi
 done
-if [[ ${#ADMIN_USERS[@]} -eq 0 ]]; then
-  echo "No valid admin usernames provided. Exiting."
-  exit 1
-fi
-DEFAULT_ADMIN=${ADMIN_USERS[0]}
-log "Admin users provided: ${ADMIN_USERS[*]}; default admin = $DEFAULT_ADMIN"
+clear
 
-echo "Enter REGULAR users (space-separated) to ensure exist / be managed by this script."
-read -ra RAW_REG_USERS
-declare -a REG_USERS=()
-unset _tmp_seen
-declare -A _tmp_seen=()
-for raw in "${RAW_REG_USERS[@]}"; do
-  if is_valid_username "$raw"; then
-    s="$raw"
+echo "Type user account names of users you want to add, with a space in between"
+read -ra usersNew
+
+usersNewLength=${#usersNew[@]}
+
+for (( i=0;i<usersNewLength;i++)); do
+  clear
+  nu=${usersNew[i]}
+  adduser "$nu" || printTime "Failed to create user $nu"
+  printTime "A user account for $nu has been created."
+  clear
+  echo "Make $nu administrator? yes or no"
+  read -r ynNew
+  if [[ "$ynNew" == "yes" ]]; then
+    gpasswd -a "$nu" sudo 2>/dev/null || true
+    gpasswd -a "$nu" adm 2>/dev/null || true
+    gpasswd -a "$nu" lpadmin 2>/dev/null || true
+    gpasswd -a "$nu" sambashare 2>/dev/null || true
+    printTime "$nu has been made an administrator."
   else
-    log "Regular input '$raw' is not a valid username. Skipping unless you provide a replacement."
-    read -rp "Enter replacement valid username for '$raw' (leave empty to SKIP): " repl
-    if [[ -n "$repl" && is_valid_username "$repl" ]]; then
-      s="$repl"
-      log "Using replacement username '$repl' for input '$raw'."
-    else
-      log "Skipping regular input '$raw' (no valid replacement provided)."
-      continue
-    fi
+    printTime "$nu has been made a standard user."
   fi
-  if [[ -z "${_tmp_seen[$s]:-}" ]]; then
-    REG_USERS+=("$s")
-    _tmp_seen[$s]=1
-  fi
-done
-log "Regular users provided: ${REG_USERS[*]}"
-
-# Create or update users function
-ensure_user_exists() {
-  # $1 username, $2 is_admin (yes/no)
-  local u=$1
-  local is_admin=${2:-no}
-  if id "$u" &>/dev/null; then
-    log "User $u exists."
-  else
-    log "User $u does NOT exist. Will NOT create unless you confirm."
-    if ask_yesno "Create user '$u' now?"; then
-      adduser --gecos "" --disabled-password "$u"
-      log "User $u created."
-    else
-      log "Skipping creation of user $u (per user choice)."
-    fi
-  fi
-
-  if [[ "$is_admin" == "yes" ]]; then
-    if id "$u" &>/dev/null; then
-      usermod -aG sudo,adm,lpadmin,sambashare "$u" || true
-      log "User $u added to sudo, adm, lpadmin, sambashare (where groups exist)."
-    else
-      log "Cannot add $u to admin groups because the account does not exist."
-    fi
-  else
-    # ensure not in sudo group (unless it's default admin)
-    if [[ "$u" != "$DEFAULT_ADMIN" ]]; then
-      if id "$u" &>/dev/null; then
-        gpasswd -d "$u" sudo 2>/dev/null || true
-        log "User $u removed from sudo (if present)."
-      else
-        log "Cannot remove $u from sudo because the account does not exist."
-      fi
-    else
-      log "User $u is default admin; will not remove sudo membership."
-    fi
-  fi
-
-  # Set password rules safely: set to expire after 90 days, min 1, warn 14
-  chage -M 90 -m 1 -W 14 "$u" 2>/dev/null || true
-  log "Password aging set for $u (max 90, min 1, warn 14)."
-
-  # Create .ssh dir lightly (not overwriting)
-  if [[ ! -d "/home/$u/.ssh" ]]; then
-    mkdir -p "/home/$u/.ssh"
-    chown "$u:$u" "/home/$u/.ssh"
-    chmod 700 "/home/$u/.ssh"
-    log "Created /home/$u/.ssh with safe perms."
-  fi
-}
-
-# Ensure provided admin and regular users exist
-for u in "${ADMIN_USERS[@]}"; do
-  ensure_user_exists "$u" yes
-done
-for u in "${REG_USERS[@]}"; do
-  ensure_user_exists "$u" no
+  passwd -x30 -n3 -w7 "$nu" 2>/dev/null || true
+  usermod -L "$nu" 2>/dev/null || true
+  printTime "$nu's password has been given a maximum age of 30 days, minimum of 3 days, and warning of 7 days. $nu's account has been locked."
 done
 
-# Now scan system users (non-system range) and remove extras/add missing as a single step
-# UID_MIN/UID_MAX from /etc/login.defs (fall back to 1000/60000)
-UID_MIN=$(awk '/^UID_MIN/ {print $2}' /etc/login.defs || echo 1000)
-UID_MAX=$(awk '/^UID_MAX/ {print $2}' /etc/login.defs || echo 60000)
-log "UID_MIN=$UID_MIN UID_MAX=$UID_MAX (from /etc/login.defs)"
+echo "Does this machine need Samba?"
+read -r sambaYN
+echo "Does this machine need FTP?"
+read -r ftpYN
+echo "Does this machine need SSH?"
+read -r sshYN
+echo "Does this machine need Telnet?"
+read -r telnetYN
+echo "Does this machine need Mail?"
+read -r mailYN
+echo "Does this machine need Printing?"
+read -r printYN
+echo "Does this machine need MySQL?"
+read -r dbYN
+echo "Will this machine be a Web Server?"
+read -r httpYN
+echo "Does this machine need DNS?"
+read -r dnsYN
+echo "Does this machine allow media files?"
+read -r mediaFilesYN
 
-mapfile -t CURRENT_USERS < <(awk -F: -v min="$UID_MIN" -v max="$UID_MAX" '$3>=min && $3<=max {print $1}' /etc/passwd)
-log "Current non-system users: ${CURRENT_USERS[*]}"
-
-# Build allowed list and system users list
-declare -A ALLOWED=()
-for u in "${ADMIN_USERS[@]}"; do ALLOWED[$u]=1; done
-for u in "${REG_USERS[@]}"; do ALLOWED[$u]=1; done
-ALLOWED[$DEFAULT_ADMIN]=1
-mapfile -t SYS_USERS < <(awk -F: -v min="$UID_MIN" '$3<min {print $1}' /etc/passwd)
-for u in "${SYS_USERS[@]}"; do ALLOWED[$u]=1; done
-
-# Determine extras (present on system but not allowed)
-declare -a EXTRA_USERS=()
-for u in "${CURRENT_USERS[@]}"; do
-  if [[ -z "${ALLOWED[$u]:-}" ]]; then
-    EXTRA_USERS+=("$u")
-  fi
-done
-
-if [[ ${#EXTRA_USERS[@]} -gt 0 ]]; then
-  echo
-  echo "The following non-system users exist but are NOT in the admin/regular lists: ${EXTRA_USERS[*]}"
-  if ask_yesno "Do you want to REMOVE all of these users now? (this runs 'userdel -r' for each)"; then
-    for u in "${EXTRA_USERS[@]}"; do
-      if [[ "$u" == "$DEFAULT_ADMIN" ]]; then
-        log "Skipping deletion of default admin $u"
-        continue
-      fi
-      userdel -r "$u" 2>/dev/null && log "Deleted extra user $u" || log "Failed to delete $u or user may not exist"
-    done
-    HANDLED_EXTRAS=1
-  else
-    log "User chose not to bulk-delete extra users; will keep them for manual review."
-    HANDLED_EXTRAS=0
-  fi
-else
-  log "No extra non-system users found to delete."
-  HANDLED_EXTRAS=1
-fi
+# end of replacement for user-driven account management
 
 # List current (non-system) users to compare
 # UID_MIN/UID_MAX from /etc/login.defs
