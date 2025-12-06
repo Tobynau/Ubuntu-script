@@ -177,6 +177,52 @@ for u in "${REG_USERS[@]}"; do
   ensure_user_exists "$u" no
 done
 
+# Now scan system users (non-system range) and remove extras/add missing as a single step
+# UID_MIN/UID_MAX from /etc/login.defs (fall back to 1000/60000)
+UID_MIN=$(awk '/^UID_MIN/ {print $2}' /etc/login.defs || echo 1000)
+UID_MAX=$(awk '/^UID_MAX/ {print $2}' /etc/login.defs || echo 60000)
+log "UID_MIN=$UID_MIN UID_MAX=$UID_MAX (from /etc/login.defs)"
+
+mapfile -t CURRENT_USERS < <(awk -F: -v min="$UID_MIN" -v max="$UID_MAX" '$3>=min && $3<=max {print $1}' /etc/passwd)
+log "Current non-system users: ${CURRENT_USERS[*]}"
+
+# Build allowed list and system users list
+declare -A ALLOWED=()
+for u in "${ADMIN_USERS[@]}"; do ALLOWED[$u]=1; done
+for u in "${REG_USERS[@]}"; do ALLOWED[$u]=1; done
+ALLOWED[$DEFAULT_ADMIN]=1
+mapfile -t SYS_USERS < <(awk -F: -v min="$UID_MIN" '$3<min {print $1}' /etc/passwd)
+for u in "${SYS_USERS[@]}"; do ALLOWED[$u]=1; done
+
+# Determine extras (present on system but not allowed)
+declare -a EXTRA_USERS=()
+for u in "${CURRENT_USERS[@]}"; do
+  if [[ -z "${ALLOWED[$u]:-}" ]]; then
+    EXTRA_USERS+=("$u")
+  fi
+done
+
+if [[ ${#EXTRA_USERS[@]} -gt 0 ]]; then
+  echo
+  echo "The following non-system users exist but are NOT in the admin/regular lists: ${EXTRA_USERS[*]}"
+  if ask_yesno "Do you want to REMOVE all of these users now? (this runs 'userdel -r' for each)"; then
+    for u in "${EXTRA_USERS[@]}"; do
+      if [[ "$u" == "$DEFAULT_ADMIN" ]]; then
+        log "Skipping deletion of default admin $u"
+        continue
+      fi
+      userdel -r "$u" 2>/dev/null && log "Deleted extra user $u" || log "Failed to delete $u or user may not exist"
+    done
+    HANDLED_EXTRAS=1
+  else
+    log "User chose not to bulk-delete extra users; will keep them for manual review."
+    HANDLED_EXTRAS=0
+  fi
+else
+  log "No extra non-system users found to delete."
+  HANDLED_EXTRAS=1
+fi
+
 # List current (non-system) users to compare
 # UID_MIN/UID_MAX from /etc/login.defs
 UID_MIN=$(awk '/^UID_MIN/ {print $2}' /etc/login.defs || echo 1000)
@@ -197,21 +243,25 @@ ALLOWED[$DEFAULT_ADMIN]=1
 mapfile -t SYS_USERS < <(awk -F: -v min="$UID_MIN" '$3<min {print $1}' /etc/passwd)
 for u in "${SYS_USERS[@]}"; do ALLOWED[$u]=1; done
 
-# Check for users not in provided lists
-for u in "${CURRENT_USERS[@]}"; do
-  if [[ -z "${ALLOWED[$u]:-}" ]]; then
-    echo "User '$u' exists on system but was NOT in your admin/regular lists."
-    if [[ "$u" == "$DEFAULT_ADMIN" ]]; then
-      log "Skipping default admin $u from deletion."
-      continue
+# Check for users not in provided lists (if not already handled in bulk above)
+if [[ "${HANDLED_EXTRAS:-0}" -eq 1 ]]; then
+  log "Extras were handled earlier; skipping per-user deletion prompts."
+else
+  for u in "${CURRENT_USERS[@]}"; do
+    if [[ -z "${ALLOWED[$u]:-}" ]]; then
+      echo "User '$u' exists on system but was NOT in your admin/regular lists."
+      if [[ "$u" == "$DEFAULT_ADMIN" ]]; then
+        log "Skipping default admin $u from deletion."
+        continue
+      fi
+      if ask_yesno "Do you want to REMOVE (userdel -r) the user '$u' ?"; then
+        userdel -r "$u" && log "Deleted user $u (home + mail removed)"
+      else
+        log "Kept user $u (user not deleted)."
+      fi
     fi
-    if ask_yesno "Do you want to REMOVE (userdel -r) the user '$u' ?"; then
-      userdel -r "$u" && log "Deleted user $u (home + mail removed)"
-    else
-      log "Kept user $u (user not deleted)."
-    fi
-  fi
-done
+  done
+fi
 
 # SERVICE QUESTIONS: SSH, TCP, APACHE
 log "Now asking about services."
