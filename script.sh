@@ -94,7 +94,7 @@ for raw in "${RAW_ADMIN_USERS[@]}"; do
   else
     log "Admin input '$raw' is not a valid username. Skipping unless you provide a replacement."
     read -rp "Enter replacement valid username for '$raw' (leave empty to SKIP): " repl
-    if [[ -n "$repl" && is_valid_username "$repl" ]]; then
+    if [[ -n "$repl" ]] && is_valid_username "$repl"; then
       s="$repl"
       log "Using replacement username '$repl' for input '$raw'."
     else
@@ -125,7 +125,7 @@ for raw in "${RAW_REG_USERS[@]}"; do
   else
     log "Regular input '$raw' is not a valid username. Skipping unless you provide a replacement."
     read -rp "Enter replacement valid username for '$raw' (leave empty to SKIP): " repl
-    if [[ -n "$repl" && is_valid_username "$repl" ]]; then
+    if [[ -n "$repl" ]] && is_valid_username "$repl"; then
       s="$repl"
       log "Using replacement username '$repl' for input '$raw'."
     else
