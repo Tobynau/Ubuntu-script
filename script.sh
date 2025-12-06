@@ -60,7 +60,8 @@ is_valid_username() {
 
 # Get admin users
 echo "Enter ADMIN users (space-separated). FIRST user will be default admin and will NOT be modified."
-read -ra RAW_ADMIN_USERS
+# Temporary IFS for this read: include space so input like "alice bob" splits correctly
+IFS=$' \t\n' read -ra RAW_ADMIN_USERS
 if [[ ${#RAW_ADMIN_USERS[@]} -eq 0 ]]; then
   echo "No admin users provided. Exiting."
   exit 1
@@ -85,7 +86,8 @@ log "Admin users: ${ADMIN_USERS[*]}; default admin = $DEFAULT_ADMIN"
 
 # Get regular users
 echo "Enter REGULAR users (space-separated) to ensure exist / be managed."
-read -ra RAW_REG_USERS
+# Temporary IFS for this read: include space so input like "alice bob" splits correctly
+IFS=$' \t\n' read -ra RAW_REG_USERS
 declare -a REG_USERS=()
 _seen=()
 for raw in "${RAW_REG_USERS[@]}"; do
