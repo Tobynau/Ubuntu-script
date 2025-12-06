@@ -67,15 +67,15 @@ read_list() {
 }
 
 # Ask for admin and regular users (admins first). First admin = DEFAULT_ADMIN (never modified)
-sanitize_username() {
-  # $1 raw username -> prints sanitized username or empty string if invalid
-  local raw="$1"
-  # trim, to-lower, replace whitespace with underscore, then remove invalid chars
-  local s
-  s=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' | sed -E 's/[[:space:]]+/_/g' | sed -E 's/[^a-z0-9._-]//g')
-  # remove any leading characters that are not a-z or 0-9
-  s=$(printf '%s' "$s" | sed -E 's/^[^a-z0-9]+//')
-  printf '%s' "$s"
+is_valid_username() {
+  # returns 0 if $1 is a valid POSIX/Linux username (simple conservative check)
+  local u=$1
+  # must start with a lowercase letter or digit, allow a-z0-9._- up to 32 chars
+  if [[ "$u" =~ ^[a-z0-9][a-z0-9._-]{0,31}$ ]]; then
+    return 0
+  else
+    return 1
+  fi
 }
 
 echo "Enter ADMIN users (space-separated). FIRST user entered will be treated as the 'default' admin and will NOT be modified by this script."
@@ -85,29 +85,34 @@ if [[ ${#RAW_ADMIN_USERS[@]} -eq 0 ]]; then
   exit 1
 fi
 
-# sanitize and deduplicate admin list
+# validate and deduplicate admin list (DO NOT auto-convert spaces to underscores)
 declare -a ADMIN_USERS=()
 declare -A _tmp_seen=()
 for raw in "${RAW_ADMIN_USERS[@]}"; do
-  s=$(sanitize_username "$raw")
-  if [[ -z "$s" ]]; then
-    log "Skipped invalid admin username input: '$raw' (empty after sanitization)"
-    continue
+  if is_valid_username "$raw"; then
+    s="$raw"
+  else
+    log "Admin input '$raw' is not a valid username. Skipping unless you provide a replacement."
+    read -rp "Enter replacement valid username for '$raw' (leave empty to SKIP): " repl
+    if [[ -n "$repl" && is_valid_username "$repl" ]]; then
+      s="$repl"
+      log "Using replacement username '$repl' for input '$raw'."
+    else
+      log "Skipping admin input '$raw' (no valid replacement provided)."
+      continue
+    fi
   fi
   if [[ -z "${_tmp_seen[$s]:-}" ]]; then
     ADMIN_USERS+=("$s")
     _tmp_seen[$s]=1
-    if [[ "$s" != "$raw" ]]; then
-      log "Sanitized admin input '$raw' -> '$s'"
-    fi
   fi
 done
 if [[ ${#ADMIN_USERS[@]} -eq 0 ]]; then
-  echo "No valid admin usernames after sanitization. Exiting."
+  echo "No valid admin usernames provided. Exiting."
   exit 1
 fi
 DEFAULT_ADMIN=${ADMIN_USERS[0]}
-log "Admin users provided (sanitized): ${ADMIN_USERS[*]}; default admin = $DEFAULT_ADMIN"
+log "Admin users provided: ${ADMIN_USERS[*]}; default admin = $DEFAULT_ADMIN"
 
 echo "Enter REGULAR users (space-separated) to ensure exist / be managed by this script."
 read -ra RAW_REG_USERS
@@ -115,20 +120,25 @@ declare -a REG_USERS=()
 unset _tmp_seen
 declare -A _tmp_seen=()
 for raw in "${RAW_REG_USERS[@]}"; do
-  s=$(sanitize_username "$raw")
-  if [[ -z "$s" ]]; then
-    log "Skipped invalid regular username input: '$raw' (empty after sanitization)"
-    continue
+  if is_valid_username "$raw"; then
+    s="$raw"
+  else
+    log "Regular input '$raw' is not a valid username. Skipping unless you provide a replacement."
+    read -rp "Enter replacement valid username for '$raw' (leave empty to SKIP): " repl
+    if [[ -n "$repl" && is_valid_username "$repl" ]]; then
+      s="$repl"
+      log "Using replacement username '$repl' for input '$raw'."
+    else
+      log "Skipping regular input '$raw' (no valid replacement provided)."
+      continue
+    fi
   fi
   if [[ -z "${_tmp_seen[$s]:-}" ]]; then
     REG_USERS+=("$s")
     _tmp_seen[$s]=1
-    if [[ "$s" != "$raw" ]]; then
-      log "Sanitized regular input '$raw' -> '$s'"
-    fi
   fi
 done
-log "Regular users provided (sanitized): ${REG_USERS[*]}"
+log "Regular users provided: ${REG_USERS[*]}"
 
 # Create or update users function
 ensure_user_exists() {
@@ -136,21 +146,33 @@ ensure_user_exists() {
   local u=$1
   local is_admin=${2:-no}
   if id "$u" &>/dev/null; then
-    log "User $u exists. Skipping creation."
+    log "User $u exists."
   else
-    log "Creating user $u (interactive adduser will run)."
-    adduser --gecos "" --disabled-password "$u"
-    log "User $u created."
+    log "User $u does NOT exist. Will NOT create unless you confirm."
+    if ask_yesno "Create user '$u' now?"; then
+      adduser --gecos "" --disabled-password "$u"
+      log "User $u created."
+    else
+      log "Skipping creation of user $u (per user choice)."
+    fi
   fi
 
   if [[ "$is_admin" == "yes" ]]; then
-    usermod -aG sudo,adm,lpadmin,sambashare "$u" || true
-    log "User $u added to sudo, adm, lpadmin, sambashare (where groups exist)."
+    if id "$u" &>/dev/null; then
+      usermod -aG sudo,adm,lpadmin,sambashare "$u" || true
+      log "User $u added to sudo, adm, lpadmin, sambashare (where groups exist)."
+    else
+      log "Cannot add $u to admin groups because the account does not exist."
+    fi
   else
     # ensure not in sudo group (unless it's default admin)
     if [[ "$u" != "$DEFAULT_ADMIN" ]]; then
-      gpasswd -d "$u" sudo 2>/dev/null || true
-      log "User $u removed from sudo (if present)."
+      if id "$u" &>/dev/null; then
+        gpasswd -d "$u" sudo 2>/dev/null || true
+        log "User $u removed from sudo (if present)."
+      else
+        log "Cannot remove $u from sudo because the account does not exist."
+      fi
     else
       log "User $u is default admin; will not remove sudo membership."
     fi
