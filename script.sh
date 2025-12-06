@@ -67,18 +67,68 @@ read_list() {
 }
 
 # Ask for admin and regular users (admins first). First admin = DEFAULT_ADMIN (never modified)
+sanitize_username() {
+  # $1 raw username -> prints sanitized username or empty string if invalid
+  local raw="$1"
+  # trim, to-lower, replace whitespace with underscore, then remove invalid chars
+  local s
+  s=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' | sed -E 's/[[:space:]]+/_/g' | sed -E 's/[^a-z0-9._-]//g')
+  # remove any leading characters that are not a-z or 0-9
+  s=$(printf '%s' "$s" | sed -E 's/^[^a-z0-9]+//')
+  printf '%s' "$s"
+}
+
 echo "Enter ADMIN users (space-separated). FIRST user entered will be treated as the 'default' admin and will NOT be modified by this script."
-read -ra ADMIN_USERS
-if [[ ${#ADMIN_USERS[@]} -eq 0 ]]; then
+read -ra RAW_ADMIN_USERS
+if [[ ${#RAW_ADMIN_USERS[@]} -eq 0 ]]; then
   echo "No admin users provided. Exiting."
   exit 1
 fi
+
+# sanitize and deduplicate admin list
+declare -a ADMIN_USERS=()
+declare -A _tmp_seen=()
+for raw in "${RAW_ADMIN_USERS[@]}"; do
+  s=$(sanitize_username "$raw")
+  if [[ -z "$s" ]]; then
+    log "Skipped invalid admin username input: '$raw' (empty after sanitization)"
+    continue
+  fi
+  if [[ -z "${_tmp_seen[$s]:-}" ]]; then
+    ADMIN_USERS+=("$s")
+    _tmp_seen[$s]=1
+    if [[ "$s" != "$raw" ]]; then
+      log "Sanitized admin input '$raw' -> '$s'"
+    fi
+  fi
+done
+if [[ ${#ADMIN_USERS[@]} -eq 0 ]]; then
+  echo "No valid admin usernames after sanitization. Exiting."
+  exit 1
+fi
 DEFAULT_ADMIN=${ADMIN_USERS[0]}
-log "Admin users provided: ${ADMIN_USERS[*]}; default admin = $DEFAULT_ADMIN"
+log "Admin users provided (sanitized): ${ADMIN_USERS[*]}; default admin = $DEFAULT_ADMIN"
 
 echo "Enter REGULAR users (space-separated) to ensure exist / be managed by this script."
-read -ra REG_USERS
-log "Regular users provided: ${REG_USERS[*]}"
+read -ra RAW_REG_USERS
+declare -a REG_USERS=()
+unset _tmp_seen
+declare -A _tmp_seen=()
+for raw in "${RAW_REG_USERS[@]}"; do
+  s=$(sanitize_username "$raw")
+  if [[ -z "$s" ]]; then
+    log "Skipped invalid regular username input: '$raw' (empty after sanitization)"
+    continue
+  fi
+  if [[ -z "${_tmp_seen[$s]:-}" ]]; then
+    REG_USERS+=("$s")
+    _tmp_seen[$s]=1
+    if [[ "$s" != "$raw" ]]; then
+      log "Sanitized regular input '$raw' -> '$s'"
+    fi
+  fi
+done
+log "Regular users provided (sanitized): ${REG_USERS[*]}"
 
 # Create or update users function
 ensure_user_exists() {
